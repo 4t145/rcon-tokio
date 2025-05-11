@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use tokio_util::codec::{Decoder, Encoder};
-
+#[derive(Debug)]
 pub struct RconPacket {
     pub id: i32,
     pub ty: i32,

@@ -150,7 +150,7 @@ impl ClientService {
             let this_client_id = client_id;
             client_id = client_id.wrapping_add(1);
             // auth
-            if let Err(e) = stream.send(RconPacket::auth(client_id, auth)).await {
+            if let Err(e) = stream.send(RconPacket::auth(this_client_id, auth)).await {
                 return ExitReason::Error(e.into());
             }
 
@@ -159,6 +159,7 @@ impl ClientService {
             };
             match result {
                 Ok(auth_result) => {
+                    tracing::debug!(?auth_result, "auth result");
                     if auth_result.ty != SERVERDATA_AUTH_RESPONSE
                         || auth_result.id != this_client_id
                     {
