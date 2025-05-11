@@ -114,7 +114,7 @@ impl ClientServiceHandle {
             _guard: guard,
         }
     }
-    
+
     pub fn client(&self) -> Client {
         Client {
             request_tx: self.request_tx.clone(),
@@ -150,7 +150,7 @@ impl ClientService {
             let this_client_id = client_id;
             client_id = client_id.wrapping_add(1);
             // auth
-            if let Err(e) = stream.send(RconPacket::command(client_id, auth)).await {
+            if let Err(e) = stream.send(RconPacket::auth(client_id, auth)).await {
                 return ExitReason::Error(e.into());
             }
 
