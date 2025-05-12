@@ -2,7 +2,10 @@
 //!
 //! Reference: https://developer.valvesoftware.com/wiki/Source_RCON_Protocol
 
-use std::{collections::HashMap, pin};
+use std::{
+    collections::HashMap,
+    pin::{self},
+};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -19,7 +22,6 @@ pub mod packet;
 
 struct ClientService {
     request_rx: tokio::sync::mpsc::Receiver<Request>,
-    password: Option<Bytes>,
     ct: CancellationToken,
 }
 
@@ -35,7 +37,7 @@ enum Response {
     Response(Bytes),
 }
 
-#[derive(Debug, thiserror::Error, Clone)]
+#[derive(Debug, thiserror::Error)]
 pub enum ClientError {
     #[error("Empty body")]
     EmptyBody,
@@ -96,23 +98,51 @@ pub struct ClientServiceHandle {
 }
 
 impl ClientServiceHandle {
-    pub fn new<S>(stream: S, password: Option<Bytes>, ct: CancellationToken) -> ClientServiceHandle
+    pub fn initialize_whitout_auth<S>(
+        stream: S,
+        ct: CancellationToken,
+    ) -> ClientServiceHandle
     where
         S: AsyncWrite + AsyncRead + Send + 'static,
     {
         let guard = ct.clone().drop_guard();
+        let stream = Framed::new(stream, RconPacketCodec);
         let (request_tx, request_rx) = tokio::sync::mpsc::channel(16);
-        let service = ClientService {
-            request_rx,
-            password,
-            ct,
-        };
+        let service = ClientService { request_rx, ct };
         let join_handle = tokio::task::spawn(service.run(stream));
         ClientServiceHandle {
             request_tx,
             join_handle,
             _guard: guard,
         }
+    }
+    pub async fn initialize<S>(
+        stream: S,
+        password: Option<Bytes>,
+        ct: CancellationToken,
+    ) -> Result<ClientServiceHandle, ClientServiceError>
+    where
+        S: AsyncWrite + AsyncRead + Unpin + Send + 'static,
+    {
+        let guard = ct.clone().drop_guard();
+        let mut stream = Framed::new(stream, RconPacketCodec);
+        const ID: i32 = 0;
+        if let Some(auth) = password {
+            stream.send(RconPacket::auth(ID, auth)).await?;
+            let auth_result = stream.next().await.ok_or(ClientServiceError::AuthFail)??;
+            tracing::debug!(?auth_result, "auth result");
+            if auth_result.ty != SERVERDATA_AUTH_RESPONSE || auth_result.id != ID {
+                return Err(ClientServiceError::AuthFail);
+            }
+        }
+        let (request_tx, request_rx) = tokio::sync::mpsc::channel(16);
+        let service = ClientService { request_rx, ct };
+        let join_handle = tokio::task::spawn(service.run(stream));
+        Ok(ClientServiceHandle {
+            request_tx,
+            join_handle,
+            _guard: guard,
+        })
     }
 
     pub fn client(&self) -> Client {
@@ -133,42 +163,18 @@ impl ClientServiceHandle {
 }
 
 impl ClientService {
-    pub async fn run<S>(mut self, stream: S) -> ExitReason
+    pub async fn run<S>(mut self, mut stream: Framed<S, RconPacketCodec>) -> ExitReason
     where
         S: AsyncWrite + AsyncRead,
     {
-        let stream = Framed::new(stream, RconPacketCodec);
-        let mut stream = pin::pin!(stream);
-        let mut client_id: i32 = 0;
+        let mut client_id: i32 = 1;
         let mut responders: HashMap<i32, tokio::sync::oneshot::Sender<Response>> = HashMap::new();
         enum Event {
             Request(Request),
             Response(RconPacket),
             Error(ClientServiceError),
         }
-        if let Some(auth) = self.password {
-            let this_client_id = client_id;
-            client_id = client_id.wrapping_add(1);
-            // auth
-            if let Err(e) = stream.send(RconPacket::auth(this_client_id, auth)).await {
-                return ExitReason::Error(e.into());
-            }
-
-            let Some(result) = stream.next().await else {
-                return ExitReason::StreamTerminated;
-            };
-            match result {
-                Ok(auth_result) => {
-                    tracing::debug!(?auth_result, "auth result");
-                    if auth_result.ty != SERVERDATA_AUTH_RESPONSE
-                        || auth_result.id != this_client_id
-                    {
-                        return ExitReason::Error(ClientServiceError::AuthFail);
-                    }
-                }
-                Err(e) => return ExitReason::Error(e.into()),
-            }
-        }
+        let mut stream = pin::pin!(stream);
         let reason = loop {
             let next_event = tokio::select! {
                 _ = self.ct.cancelled() => {
