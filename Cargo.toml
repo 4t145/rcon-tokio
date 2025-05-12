@@ -11,3 +11,10 @@ tokio = { version = "1", features = ["io-util", "net", "macros", "rt"] }
 futures-util = { version = "0.3", features = ["sink"] }
 pin-project-lite = "0.2.16"
 tracing = { version = "0.1" }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["io-util", "net", "macros", "rt", "signal", "io-std"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = { version = "*" }
+[[example]]
+name = "rcon-cli"
